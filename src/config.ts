@@ -26,6 +26,8 @@ export interface GuardConfig {
 	onUntrusted?: UntrustedPolicy;
 	/** omp-safe: how to run omp, `["omp"]` by default. */
 	omp?: string[];
+	/** omp-safe: environment variables passed to omp besides the built-in allowlist, such as a provider's key. */
+	passEnv?: string[];
 }
 
 export function defaultConfigPath(): string {
@@ -71,6 +73,7 @@ export function normalizeConfig(raw: unknown, base: string): GuardConfig {
 	}
 	if (input.tools !== undefined) config.tools = stringList(input.tools, "tools");
 	if (input.omp !== undefined) config.omp = stringList(input.omp, "omp");
+	if (input.passEnv !== undefined) config.passEnv = stringList(input.passEnv, "passEnv");
 	if (input.allowSkillCommands !== undefined) {
 		if (typeof input.allowSkillCommands !== "boolean") throw new Error("allowSkillCommands must be true or false");
 		config.allowSkillCommands = input.allowSkillCommands;

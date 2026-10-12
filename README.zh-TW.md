@@ -23,7 +23,7 @@ skill 是別人寫的文字，omp 會把它放到模型面前。它的 descripti
 | 元件 | 在哪裡 | 做什麼 | 失敗時 |
 |---|---|---|---|
 | CI 工具 `omp-skill-guard` | CI | `keygen` 產生金鑰對。`inventory` 列出 omp 會載入的 skill 與 digest。`check` 檢查規則：`name:` 等於目錄名；名稱只用字母、數字、`.`、`_`、`:`、`-`；`SKILL.md` 用 LF 換行；有 description；沒有 symlink 或特殊檔案。`manifest` 遇到核准資料缺負責人、來源或 commit，或 scripts 跟申報清單不同，就拒絕。`sign` 與 `verify` 處理簽章。 | 以非 0 結束，不寫出清單。 |
-| 啟動包裝 `omp-safe` | 開發者的機器，omp 啟動前 | 驗證清單；用 omp 自己的 discovery 盤點（包含 `-e` 擴充附帶的 skill）；算出每個 skill 目錄的 digest；抓出優先序較高的位置用同名 skill 遮蔽核准的那份；跑自我測試；然後問人：不啟動（預設）、只帶核准的 skill 啟動、或關掉 skill 啟動。沒有終端機時一律拒絕，除非 `--on-untrusted` 另外指定。它寫出設定 overlay 與這次專用的 guard 進入點，啟動 omp；結束後印出 guard 的判斷統計，guard 的 handler 出錯或逾時就告警。 | 拒絕啟動（exit 3）。 |
+| 啟動包裝 `omp-safe` | 開發者的機器，omp 啟動前 | 驗證清單；用 omp 自己的 discovery 盤點（包含 `-e` 擴充附帶的 skill）；算出每個 skill 目錄的 digest；抓出優先序較高的位置用同名 skill 遮蔽核准的那份；跑自我測試；然後問人：不啟動（預設）、只帶核准的 skill 啟動、或關掉 skill 啟動。沒有終端機時一律拒絕，除非 `--on-untrusted` 另外指定。它寫出設定 overlay 與這次專用的 guard 進入點，從空目錄啟動 omp（用 `--cwd` 指向專案），只給允許清單上的環境變數；結束後印出 guard 的判斷統計，guard 的 handler 出錯或逾時就告警。 | 拒絕啟動（exit 3）。 |
 | description guard | `before_agent_start` | 系統提示詞的 `<skills>` 區塊裡，沒核准或核准後被改過的 skill，description 換成「已保留」的提示；核准過但像指令的 description 換成「已移除」的提示。比對的是 omp 實際排出來的完整條目，所以一段 description 假冒成另一個 skill 的條目時，會整段被換掉。 | omp 會照送原本的提示詞，所以 handler 不丟錯。omp-safe 的 overlay 本來就讓沒核准的 skill 進不了提示詞。 |
 | skill 存取政策 | `tool_call` | `read`、`grep`、`ast_grep`、`bash` 只能在清單核准、且目錄 digest 仍等於核准值時碰 skill；每次呼叫都重新計算。認得 `skill://` URL、實際路徑（相對、絕對、`~`、經過 symlink、帶 read selector）、以 `;` 分隔的路徑清單，以及 `bash` 指令與它的 `cwd`。`bash` 要碰 skill 的 script，那支 script 必須列在清單裡。omp 沒載入的 skill 目錄，同樣用 digest 比對。`bash` 指令若透過萬用字元、變數或整個 skills 目錄碰到 skill 檔案，當成查不清而擋下。 | omp 會擋下這次呼叫，guard 也會擋。 |
 | body guard | `tool_result` | 上述工具回傳的 skill 內容，像指令的行換成標記，其他行保留。整個工作區的 `grep`、`ast_grep` 或 shell 搜尋：核准 skill 的輸出逐行清理，沒核准或被改過的 skill 的輸出整段拿掉，一般檔案的結果不動。 | omp 會照送原本的結果，所以 handler 不丟錯；查不了的 skill 結果整份不給。 |
@@ -35,7 +35,7 @@ skill 是別人寫的文字，omp 會把它放到模型面前。它的 descripti
 
 ## 需求
 
-- [Bun](https://bun.sh) 1.3.14 以上。
+- [Bun](https://bun.sh) 1.3.14 以上，以及兩支 bin 包裝要用的 POSIX shell。
 - omp 18.2.8。這個套件依這個版本撰寫與測試；之後的版本改了 skill discovery（見〈限制〉）。
 - `omp-safe` 與 `omp-skill-guard` 會 import omp 自己的 discovery 程式，所以要把套件裝在 omp 旁邊：clone 下來執行 `bun install`。載入 omp 的程式，會讓 omp 晚幾秒啟動。
 
@@ -92,7 +92,8 @@ omp-skill-guard sign --key "$SKILL_GUARD_KEY_FILE" skills.manifest.json
 	"tools": ["read", "write", "edit", "grep", "find"],
 	"allowSkillCommands": false,
 	"onUntrusted": "ask",
-	"omp": ["omp"]
+	"omp": ["omp"],
+	"passEnv": []
 }
 ```
 
@@ -103,6 +104,8 @@ omp-safe -- --model <你的模型>
 ```
 
 guard 只從這個檔案或明確的參數讀信任根，從不讀環境變數：Bun 會在 omp 的程式執行前，把專案的 `.env` 載入行程，否則 repo 可以把 guard 指向它自己的金鑰。
+
+omp-safe 從空目錄啟動 omp，再用 `--cwd` 指向專案。用 npm 安裝的 omp，Bun 會在 omp 自己的程式碼之前，執行啟動目錄 `bunfig.toml` 的 preload 並載入該目錄的 `.env`；不這樣做的話，repo 的 preload 會比所有 guard 都早執行。omp 拿到的是空環境，加上 `PATH`、`HOME`、語系、終端機、暫存、XDG 和 `PI_CODING_AGENT_DIR`；omp 還需要的其他變數，例如 provider 的金鑰變數，用 `passEnv` 或 `--pass-env` 傳進去。omp 載入的程式碼讀得到 omp 拿到的每個變數。兩支指令本身也一樣：`bin/omp-safe` 和 `bin/omp-skill-guard` 是很小的 shell 包裝，會讓 Bun 從空目錄啟動，請執行它們，不要直接執行 `.ts` 檔。
 
 `omp-safe --help` 會列出所有選項。設定檔的每個欄位都有對應的選項可以覆寫；`--on-untrusted refuse|exclude|disable` 決定沒有終端機時怎麼做。結束碼：omp 自己的結束碼、使用方式錯誤是 2、拒絕啟動是 3。
 
@@ -115,19 +118,19 @@ omp-safe 交給 omp 的 overlay 類似 [`examples/overlay.example.yml`](examples
 ## 測試
 
 ```bash
-bun test
+bun run test
 ```
 
-測試經由 omp 自己的 loader、runner、settings 與 skill discovery 執行，不需要網路：每種指稱 skill 的方式，各 guard 的放行與擋下路徑；清單與簽章；啟動包裝的判斷與 overlay（再交給 omp 的 settings 載入一次）；以及 CI 工具。測試用自己的 HOME，不會讀到你的 skill。
+測試經由 omp 自己的 loader、runner、settings 與 skill discovery 執行，不需要網路：每種指稱 skill 的方式，各 guard 的放行與擋下路徑；清單與簽章；啟動包裝的判斷與 overlay（再交給 omp 的 settings 載入一次）；以及 CI 工具。`bun run test` 會用暫存的 `HOME` 和 `TMPDIR` 啟動 Bun；直接打 `bun test` 會被拒絕，因為測試會在家目錄底下建立專案和 log，而 Bun 在啟動時就固定了家目錄。
 
 Live 測試跑真的 omp，模型換成測試專用的腳本模型（`test/scripted-provider.ts`），並記下模型會收到的內容：
 
 ```bash
 SKILL_GUARD_LIVE=1 OMP_CLI=/path/to/oh-my-pi/packages/coding-agent/src/cli.ts \
-SKILL_GUARD_LIVE_OUT=/tmp/skill-guard-evidence bun test test/live.test.ts
+SKILL_GUARD_LIVE_OUT=/tmp/skill-guard-evidence bun run test test/live.test.ts
 ```
 
-改用 `OMP_BIN=/path/to/omp` 可以跑已安裝的 omp。六個情境涵蓋：description（沒有 guard、omp-safe、只有 guard）、讀 body（核准、沒核准、啟動後被改）、`grep` 與 `bash`（限定範圍、整個工作區、擋下）、`/skill:`（guard、沒有 guard、omp-safe）、scripts（核准、啟動後被改），以及 omp-safe 拒絕啟動、它的稽核紀錄與報告。
+改用 `OMP_BIN=/path/to/omp` 可以跑已安裝的 omp；已經存在的 evidence 資料夾不會被覆寫。八個情境涵蓋：description（沒有 guard、omp-safe、只有 guard）、讀 body（核准、沒核准、啟動後被改）、`grep` 與 `bash`（限定範圍、整個工作區、擋下）、`/skill:`（guard、沒有 guard、omp-safe）、scripts（核准、啟動後被改）、omp-safe 拒絕啟動與它的稽核紀錄和報告、repo 的 `bunfig.toml` preload 和 `.env`（直接跑 omp 時會進來，經 omp-safe 啟動時不會，而且沒列的環境變數也不會傳進去），以及 CI 工具有沒有經過包裝的差別。
 
 ## 公開發布前的待辦
 

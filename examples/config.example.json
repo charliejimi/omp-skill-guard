@@ -5,5 +5,6 @@
 	"tools": ["read", "write", "edit", "grep", "find"],
 	"allowSkillCommands": false,
 	"onUntrusted": "ask",
-	"omp": ["omp"]
+	"omp": ["omp"],
+	"passEnv": []
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1] - 2026-10-12
+
+### Changed
+
+- `omp-safe` starts omp from an empty per-run directory and names the project with `--cwd`, so a repository's `bunfig.toml` preload and `.env` no longer run inside omp when omp is installed from npm. A `--cwd` among omp's own arguments names the project.
+- `omp-safe` gives omp an empty environment plus an allowlist (`PATH`, `HOME`, locale, terminal, temp, XDG, `PI_CODING_AGENT_DIR`). Pass anything else omp needs, such as a provider's key variable, with the new `passEnv` setting or `--pass-env`; before, omp got the launcher's whole environment.
+- `bin/omp-safe` and `bin/omp-skill-guard` are shell wrappers that start Bun in an empty directory, so a repository's `bunfig.toml` preload cannot run inside the launcher or the CI tool. The `.ts` entries warn when Bun was started in a directory with a `bunfig.toml`.
+
+### Fixed
+
+- The test suite no longer reaches the real home directory. Bun fixes `os.homedir()` when it starts, so the preload's change to `HOME` had no effect: one test created and removed a project under the real home, the launcher test wrote a log under the real `~/.omp/logs`, and omp's discovery read the real `~/.omp/plugins`. `bun run test` now starts Bun with a temporary `HOME` and `TMPDIR`, plain `bun test` refuses to run, and every recursive delete in the tests is checked to stay inside that temporary root.
+- The live tests no longer delete an existing evidence folder before a run; they refuse to overwrite it.
+
 ## [0.1.0] - 2026-10-12
 
 ### Added

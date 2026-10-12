@@ -212,7 +212,7 @@ describe("launch", () => {
 				'const overlay = fs.readFileSync(argv[argv.indexOf("--config") + 1]!, "utf8");',
 				'const entryPath = argv[argv.indexOf("-e") + 1]!;',
 				'const entry = fs.readFileSync(entryPath, "utf8");',
-				`fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, cwd: process.cwd(), overlay, entry }));`,
+				`fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, cwd: process.cwd(), launchDir: fs.readdirSync(process.cwd()), env: Object.keys(process.env), overlay, entry }));`,
 				`const logs = ${JSON.stringify(getLogsDir())};`,
 				"fs.mkdirSync(logs, { recursive: true });",
 				'const line = { timestamp: new Date().toISOString(), level: "warn", pid: process.pid, message: "Extension handler timed out", extensionPath: entryPath, event: "tool_result", timeoutMs: 30000 };',
@@ -231,14 +231,26 @@ describe("launch", () => {
 		const stateDir = tempDir("sg-state-");
 		const code = await launch({
 			cwd: s.project.cwd,
-			config: { ...s.config, omp: fake.command, tools: ["read", "grep"], onUntrusted: "exclude" },
+			config: { ...s.config, omp: fake.command, tools: ["read", "grep"], onUntrusted: "exclude", passEnv: ["SG_PASSED"] },
 			ompArgs: ["--mode", "rpc"],
 			stateDir,
 			io,
+			env: { ...process.env, SG_PASSED: "1", SG_SECRET_TOKEN: "not-for-omp" },
 		});
 		expect(code).toBe(7);
-		const record = JSON.parse(fs.readFileSync(fake.record, "utf8")) as { argv: string[]; cwd: string; overlay: string; entry: string };
-		expect(record.cwd).toBe(fs.realpathSync(s.project.cwd));
+		const record = JSON.parse(fs.readFileSync(fake.record, "utf8")) as {
+			argv: string[];
+			cwd: string;
+			launchDir: string[];
+			env: string[];
+			overlay: string;
+			entry: string;
+		};
+		expect(record.cwd.startsWith(fs.realpathSync(stateDir))).toBe(true);
+		expect(record.launchDir).toEqual([]);
+		expect(record.argv.slice(0, 2)).toEqual(["--cwd", s.project.cwd]);
+		expect(record.env).toContain("SG_PASSED");
+		expect(record.env).not.toContain("SG_SECRET_TOKEN");
 		expect(record.argv.slice(-4, -1)).toEqual(["--mode", "rpc", "-e"]);
 		expect(record.argv[record.argv.indexOf("--tools") + 1]).toBe("read,grep");
 		expect(record.overlay).toContain('"deploy-helper"');
@@ -253,10 +265,12 @@ describe("launch", () => {
 		expect(output).toContain("timed out");
 	});
 
-	it("puts the guard last among the extensions and before omp's own --, after which omp reads message text", () => {
+	it("names the project with --cwd and puts the guard last among the extensions, before omp's own --, after which omp reads message text", () => {
 		const config: GuardConfig = { omp: ["omp"], tools: ["read"] };
-		expect(buildCommand(config, "/o.yml", "/g.ts", ["-e", "/other.ts", "--", "-e is literal text"])).toEqual([
+		expect(buildCommand(config, "/o.yml", "/g.ts", ["-e", "/other.ts", "--", "-e is literal text"], "/work/shipit")).toEqual([
 			"omp",
+			"--cwd",
+			"/work/shipit",
 			"--config",
 			"/o.yml",
 			"--tools",
@@ -268,6 +282,24 @@ describe("launch", () => {
 			"--",
 			"-e is literal text",
 		]);
+	});
+
+	it("treats a --cwd among omp's arguments as the project and passes omp one absolute --cwd", async () => {
+		const s = setup();
+		const fake = fakeOmp(s.trust);
+		const io = recordingIO();
+		const code = await launch({
+			cwd: s.project.root,
+			config: { ...s.config, omp: fake.command, onUntrusted: "exclude" },
+			ompArgs: ["--cwd", "shipit", "--mode", "rpc"],
+			stateDir: tempDir("sg-state-"),
+			io,
+		});
+		expect(code).toBe(7);
+		const record = JSON.parse(fs.readFileSync(fake.record, "utf8")) as { argv: string[] };
+		expect(record.argv.filter(arg => arg === "--cwd")).toHaveLength(1);
+		expect(record.argv[record.argv.indexOf("--cwd") + 1]).toBe(s.project.cwd);
+		expect(io.lines.join("\n")).toContain("release-notes");
 	});
 
 	it("does not start omp when it refuses", async () => {

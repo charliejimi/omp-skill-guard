@@ -32,6 +32,23 @@ export interface Project {
 	skillDir(name: string, root?: string): string;
 }
 
+/** The temporary root test/run.ts created; test/setup.ts already checked HOME and TMPDIR are inside it. */
+const TEST_ROOT = fs.realpathSync(process.env.SG_TEST_ROOT ?? "/nonexistent-test-root");
+
+/** Deletes `target` only when its real path is strictly inside the suite's temporary root. */
+export function safeRemove(target: string): void {
+	let real: string;
+	try {
+		real = fs.realpathSync(target);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
+	}
+	const rel = path.relative(TEST_ROOT, real);
+	if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`refusing to delete ${target}: outside the test root`);
+	fs.rmSync(real, { recursive: true, force: true });
+}
+
 const temps: string[] = [];
 
 export function tempDir(prefix: string, parent = os.tmpdir()): string {
@@ -41,7 +58,7 @@ export function tempDir(prefix: string, parent = os.tmpdir()): string {
 }
 
 export function removeTemps(): void {
-	for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+	for (const dir of temps.splice(0)) safeRemove(dir);
 }
 
 export function writeSkill(cwd: string, spec: SkillSpec): string {

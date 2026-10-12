@@ -1,17 +1,17 @@
 // Live runs against real omp, driven by test/scripted-provider.ts instead of a model, so they need no
-// network and no provider account. Opt-in:
+// network and no provider account. Opt-in, under `bun run test` like the rest of the suite:
 //   SKILL_GUARD_LIVE=1       run these tests
 //   OMP_CLI                  omp's src/cli.ts, run with bun (or OMP_BIN: an installed omp executable)
-//   SKILL_GUARD_LIVE_OUT     optional folder for evidence, one subfolder per run
+//   SKILL_GUARD_LIVE_OUT     optional folder for evidence, one subfolder per run; must not exist yet
 // Every world has its own HOME, project, TMPDIR, key, and manifest, so nothing touches the real
-// ~/.omp. omp-safe runs go through bin/omp-safe.ts the way a user starts it.
+// ~/.omp. omp-safe and the CI tool run through their bin wrappers, the way a user starts them.
 import { afterAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DESCRIPTION_REMOVED, DESCRIPTION_WITHHELD, REMOVED_MATCHES } from "../src/index";
 import { NEUTRALIZED_LINE } from "../src/text";
-import { BAIT_MARK, DEPLOY_HELPER, PDF_NOTES, type Project, RELEASE_NOTES, approve, makeProject, removeTemps, tempDir } from "./fixtures";
+import { BAIT_MARK, DEPLOY_HELPER, PDF_NOTES, type Project, RELEASE_NOTES, approve, makeProject, removeTemps, safeRemove, tempDir } from "./fixtures";
 import { KEYS, PACKAGE, manifestOf, writeGuardEntry, writeManifest } from "./helpers";
 import type { ScriptStep } from "./scripted-provider";
 
@@ -19,7 +19,9 @@ const LIVE = process.env.SKILL_GUARD_LIVE === "1";
 const OMP = process.env.OMP_CLI ? ["bun", process.env.OMP_CLI] : process.env.OMP_BIN ? [process.env.OMP_BIN] : [];
 const OUT = process.env.SKILL_GUARD_LIVE_OUT;
 const PROVIDER = path.join(import.meta.dir, "scripted-provider.ts");
-const OMP_SAFE = path.join(PACKAGE, "bin", "omp-safe.ts");
+const OMP_SAFE = path.join(PACKAGE, "bin", "omp-safe");
+const CI_TOOL = path.join(PACKAGE, "bin", "omp-skill-guard");
+const FAKE_KEY = "fake-cursor-key-for-live-tests-0123456789";
 const RUN_TIMEOUT_MS = 90_000;
 const BODY_MARK = "Use this when deploying shipit";
 
@@ -48,6 +50,10 @@ interface RunOptions {
 	beforePrompt?: (world: World) => void;
 	/** omp-safe is expected to refuse, so omp never starts. */
 	expectRefusal?: boolean;
+	/** More arguments for omp itself. */
+	extraFlags?: string[];
+	/** More environment variables for the process the test starts. */
+	env?: Record<string, string>;
 }
 
 interface Run {
@@ -78,13 +84,19 @@ function newWorld(approved = ["deploy-helper", "pdf-notes"]): World {
 	const audit = path.join(trust, "audit.jsonl");
 	const config = path.join(trust, "config.json");
 	const files = { manifest: signed.manifest, signature: signed.signature, publicKeys: [keyFile], auditLog: audit };
-	fs.writeFileSync(config, `${JSON.stringify({ ...files, omp: OMP }, null, 2)}\n`);
+	fs.writeFileSync(
+		config,
+		`${JSON.stringify({ ...files, omp: OMP, passEnv: ["SCRIPTED_PROVIDER_SCRIPT", "SCRIPTED_PROVIDER_LOG", "SCRIPTED_PROVIDER_KEY"] }, null, 2)}\n`,
+	);
 	const entry = writeGuardEntry(trust, { configPath: null, ...files, runId: "guard-only" });
 	return { root, home, tmp, project, work: project.cwd, audit, config, entry };
 }
 
 function sanitize(text: string, world: World): string {
-	return text.split(world.root).join("<run>").split(os.homedir()).join("~");
+	const omp = process.env.OMP_CLI ? path.dirname(path.dirname(path.dirname(process.env.OMP_CLI))) : "";
+	let out = text.split(world.root).join("<run>").split(PACKAGE).join("<package>");
+	if (omp) out = out.split(omp).join("<omp>");
+	return out.split(os.homedir()).join("~");
 }
 
 async function waitFor(probe: () => boolean, what: string, failed: () => string | undefined): Promise<void> {
@@ -132,7 +144,7 @@ function messagesSeen(run: Run, request = 0): string {
 async function runOmp(world: World, name: string, options: RunOptions): Promise<Run> {
 	const slug = name.replaceAll("/", "-");
 	const dir = OUT ? path.join(OUT, name) : tempDir("sg-run-");
-	fs.rmSync(dir, { recursive: true, force: true });
+	if (OUT && fs.existsSync(dir)) throw new Error(`${dir} already exists; evidence folders are never overwritten`);
 	fs.mkdirSync(dir, { recursive: true });
 	const script = path.join(world.root, `${slug}.script.json`);
 	const log = path.join(world.root, `${slug}.requests.jsonl`);
@@ -153,11 +165,11 @@ async function runOmp(world: World, name: string, options: RunOptions): Promise<
 		"--no-title",
 		"--no-lsp",
 		"--no-rules",
+		...(options.extraFlags ?? []),
 	];
 	const command =
 		options.via === "omp-safe"
 			? [
-					"bun",
 					OMP_SAFE,
 					"--config",
 					world.config,
@@ -184,6 +196,7 @@ async function runOmp(world: World, name: string, options: RunOptions): Promise<
 			SCRIPTED_PROVIDER_SCRIPT: script,
 			SCRIPTED_PROVIDER_LOG: log,
 			SCRIPTED_PROVIDER_KEY: "unused",
+			...options.env,
 		},
 		stdin: "pipe",
 		stdout: "pipe",
@@ -408,7 +421,7 @@ describe.skipIf(!LIVE)("live on real omp 18.2.8, scripted model, no network", ()
 			blocked: (toolResultsSeen(approved)[0] ?? "").includes("omp-skill-guard: blocked"),
 		};
 		record(approved, approvedChecks);
-		fs.rmSync(path.join(world.work, "released.txt"), { force: true });
+		safeRemove(path.join(world.work, "released.txt"));
 
 		const changed = await runOmp(world, "scripts/2-changed-after-startup", {
 			via: "guard",
@@ -472,4 +485,80 @@ describe.skipIf(!LIVE)("live on real omp 18.2.8, scripted model, no network", ()
 			launcherReported: true,
 		});
 	}, 300_000);
+
+	/** A module that records whether it ran, whether the repository's .env reached it, and whether the fake key was set. */
+	function canaryModule(file: string): string {
+		return `import * as fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(file)}, JSON.stringify({ dotenvMarker: process.env.SG_DOTENV_MARKER ?? null, credentialPresent: Boolean(process.env.CURSOR_API_KEY) }));\n`;
+	}
+
+	function plantPreloadAndDotenv(world: World): string {
+		const canary = path.join(world.root, "preload-ran.json");
+		fs.writeFileSync(path.join(world.work, "bunfig.toml"), 'preload = ["./scripts/preload.ts"]\n');
+		fs.mkdirSync(path.join(world.work, "scripts"), { recursive: true });
+		fs.writeFileSync(path.join(world.work, "scripts", "preload.ts"), canaryModule(canary));
+		fs.writeFileSync(path.join(world.work, ".env"), "SG_DOTENV_MARKER=from-repo-dotenv\n");
+		return canary;
+	}
+
+	const readCanary = (file: string) => (fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, "utf8")) as { dotenvMarker: string | null; credentialPresent: boolean }) : null);
+
+	it("launch: the repository's bunfig.toml preload and .env reach plain omp, but not omp through omp-safe, which also drops unlisted variables", async () => {
+		const world = newWorld();
+		const preload = plantPreloadAndDotenv(world);
+		const probeFile = path.join(world.root, "env-probe.json");
+		const probe = path.join(world.root, "env-probe.ts");
+		fs.writeFileSync(probe, `${canaryModule(probeFile)}export default function () {}\n`);
+		const common = { tools: "read", prompt: "hi", steps: [done], extraFlags: ["-e", probe], env: { CURSOR_API_KEY: FAKE_KEY } };
+
+		const plain = await runOmp(world, "launch/1-plain-omp", { via: "none", ...common });
+		const plainProbe = readCanary(probeFile);
+		const plainChecks = {
+			preloadRan: readCanary(preload) !== null,
+			probeSawRepositoryDotenv: plainProbe?.dotenvMarker === "from-repo-dotenv",
+			probeSawCredential: plainProbe?.credentialPresent ?? false,
+		};
+		record(plain, plainChecks);
+		safeRemove(preload);
+		safeRemove(probeFile);
+
+		const safe = await runOmp(world, "launch/2-omp-safe", { via: "omp-safe", onUntrusted: "exclude", ...common });
+		const safeProbe = readCanary(probeFile);
+		const safeChecks = {
+			exitCode: safe.exitCode,
+			preloadRan: readCanary(preload) !== null,
+			probeLoaded: safeProbe !== null,
+			probeSawRepositoryDotenv: safeProbe?.dotenvMarker === "from-repo-dotenv",
+			probeSawCredential: safeProbe?.credentialPresent ?? false,
+		};
+		record(safe, safeChecks);
+
+		expect(plainChecks).toEqual({ preloadRan: true, probeSawRepositoryDotenv: true, probeSawCredential: true });
+		expect(safeChecks).toEqual({ exitCode: 0, preloadRan: false, probeLoaded: true, probeSawRepositoryDotenv: false, probeSawCredential: false });
+	}, 300_000);
+
+	it("CI tool: its wrapper keeps the repository's bunfig.toml preload out; started by Bun in the repository, the preload runs", async () => {
+		const world = newWorld();
+		const preload = plantPreloadAndDotenv(world);
+		const env = { PATH: process.env.PATH ?? "", HOME: world.home, TMPDIR: world.tmp, LANG: "C.UTF-8" };
+		const viaWrapper = Bun.spawnSync([CI_TOOL, "inventory"], { cwd: world.work, env });
+		const preloadRanInWrapper = readCanary(preload) !== null;
+		const direct = Bun.spawnSync(["bun", path.join(PACKAGE, "bin", "omp-skill-guard.ts"), "inventory"], { cwd: world.work, env });
+		const preloadRanDirectly = readCanary(preload) !== null;
+		const out = (result: { stdout?: Buffer; stderr?: Buffer }) => sanitize(`${result.stdout?.toString() ?? ""}${result.stderr?.toString() ?? ""}`, world);
+		const dir = OUT ? path.join(OUT, "ci/1-inventory") : tempDir("sg-run-");
+		if (OUT && fs.existsSync(dir)) throw new Error(`${dir} already exists; evidence folders are never overwritten`);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "via-wrapper.txt"), `exit ${viaWrapper.exitCode}\n${out(viaWrapper)}`);
+		fs.writeFileSync(path.join(dir, "direct-bun.txt"), `exit ${direct.exitCode}\n${out(direct)}`);
+		const checks = {
+			wrapperExit: viaWrapper.exitCode,
+			wrapperListsSkills: out(viaWrapper).includes("deploy-helper"),
+			preloadRanInWrapper,
+			directExit: direct.exitCode,
+			preloadRanWhenStartedDirectly: preloadRanDirectly,
+			directWarns: out(direct).includes("its preload ran inside this process"),
+		};
+		fs.writeFileSync(path.join(dir, "summary.json"), `${JSON.stringify({ run: "ci/1-inventory", checks }, null, 2)}\n`);
+		expect(checks).toEqual({ wrapperExit: 0, wrapperListsSkills: true, preloadRanInWrapper: false, directExit: 0, preloadRanWhenStartedDirectly: true, directWarns: true });
+	}, 120_000);
 });

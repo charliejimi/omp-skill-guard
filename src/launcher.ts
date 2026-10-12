@@ -1,7 +1,10 @@
 // omp-safe: before omp starts, checks every skill omp would load against the signed manifest and
 // runs the guard self-test; then starts omp with a settings overlay that loads only approved,
 // unchanged skills and with the guard configured explicitly; afterwards reports the guard's
-// decisions and alerts on any guard handler that failed or timed out.
+// decisions and alerts on any guard handler that failed or timed out. omp starts in an empty
+// directory and reaches the project through --cwd, because Bun runs the bunfig.toml preload and
+// loads the .env of the directory it starts in before omp's code; and it gets only an
+// allowlisted environment.
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -22,6 +25,7 @@ import {
 	loadConfig,
 	resolveConfigPath,
 } from "./config";
+import { childEnv } from "./env";
 import type { SkillGuardOptions } from "./index";
 import { type Manifest, approvalRule, digestFile, digestSkillDir, listScripts, loadTrustedManifest, resolvePublicKeys } from "./manifest";
 import type { SkillRule } from "./policy";
@@ -52,6 +56,8 @@ export interface LaunchOptions {
 	io: LaunchIO;
 	selfTest?: () => SelfTestResult;
 	now?: Date;
+	/** The environment omp's allowlisted variables come from; the process's own by default. */
+	env?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface InventoryItem {
@@ -124,6 +130,20 @@ export async function inventory(cwd: string, options: InventoryOptions = {}): Pr
 function splitAtSeparator(args: readonly string[]): [string[], string[]] {
 	const at = args.indexOf("--");
 	return at < 0 ? [[...args], []] : [args.slice(0, at), args.slice(at)];
+}
+
+/** A `--cwd` among omp's own arguments names the project; it resolves against `base`, and omp gets the launcher's `--cwd` instead. */
+function takeCwd(args: readonly string[], base: string): { cwd?: string; args: string[] } {
+	const [flags, rest] = splitAtSeparator(args);
+	const kept: string[] = [];
+	let cwd: string | undefined;
+	for (let i = 0; i < flags.length; i++) {
+		const arg = flags[i]!;
+		if (arg === "--cwd" && i + 1 < flags.length) cwd = resolveConfigPath(flags[++i]!, base);
+		else if (arg.startsWith("--cwd=")) cwd = resolveConfigPath(arg.slice("--cwd=".length), base);
+		else kept.push(arg);
+	}
+	return { ...(cwd ? { cwd } : {}), args: [...kept, ...rest] };
 }
 
 function extensionArgs(args: readonly string[]): { paths: string[]; none: boolean } {
@@ -238,13 +258,14 @@ export function renderEntry(options: SkillGuardOptions): string {
 }
 
 /**
- * omp's command line. The guard entry goes last among the extensions, so it sees what the others
- * add, and before omp's own `--`, after which omp would read it as message text.
+ * omp's command line. omp starts in an empty directory, so the project comes first with `--cwd`.
+ * The guard entry goes last among the extensions, so it sees what the others add, and before omp's
+ * own `--`, after which omp would read it as message text.
  */
-export function buildCommand(config: GuardConfig, overlay: string, entry: string, ompArgs: readonly string[]): string[] {
+export function buildCommand(config: GuardConfig, overlay: string, entry: string, ompArgs: readonly string[], cwd: string): string[] {
 	const [flags, rest] = splitAtSeparator(ompArgs);
 	const tools = config.tools && config.tools.length > 0 ? ["--tools", config.tools.join(",")] : [];
-	return [...(config.omp ?? ["omp"]), "--config", overlay, ...tools, ...flags, "-e", entry, ...rest];
+	return [...(config.omp ?? ["omp"]), "--cwd", cwd, "--config", overlay, ...tools, ...flags, "-e", entry, ...rest];
 }
 
 function readJsonLines(file: string): Array<Record<string, unknown>> {
@@ -305,7 +326,10 @@ function report(io: LaunchIO, auditLog: string, runId: string, pid: number, entr
 /** The whole run: preflight, decision, overlay and entry, omp, report. Returns omp's exit code. */
 export async function launch(options: LaunchOptions): Promise<number> {
 	const { io, config } = options;
-	const pre = await preflight(options);
+	const project = takeCwd(options.ompArgs ?? [], options.cwd);
+	const cwd = project.cwd ?? path.resolve(options.cwd);
+	const ompArgs = project.args;
+	const pre = await preflight({ ...options, cwd, ompArgs });
 	if (pre.manifestProblem) io.err(`omp-safe: ${pre.manifestProblem}`);
 	for (const failure of pre.selfTest.failures) io.err(`omp-safe: self-test failed: ${failure}`);
 	const outcome = await decide(pre, config.onUntrusted ?? "ask", io);
@@ -319,7 +343,8 @@ export async function launch(options: LaunchOptions): Promise<number> {
 
 	const runId = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`;
 	const runDir = path.join(options.stateDir ?? defaultStateDir(), runId);
-	fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+	const launchDir = path.join(runDir, "launch");
+	fs.mkdirSync(launchDir, { recursive: true, mode: 0o700 });
 	try {
 		const overlay = path.join(runDir, "overlay.yml");
 		const entry = path.join(runDir, "guard.ts");
@@ -335,12 +360,12 @@ export async function launch(options: LaunchOptions): Promise<number> {
 			entry,
 		};
 		fs.writeFileSync(entry, renderEntry(guard), { mode: 0o600 });
-		const child = Bun.spawn(buildCommand(config, overlay, entry, options.ompArgs ?? []), {
-			cwd: options.cwd,
+		const child = Bun.spawn(buildCommand(config, overlay, entry, ompArgs, cwd), {
+			cwd: launchDir,
 			stdin: "inherit",
 			stdout: "inherit",
 			stderr: "inherit",
-			env: process.env,
+			env: childEnv(options.env ?? process.env, config.passEnv ?? []),
 		});
 		const ignore = () => {};
 		process.on("SIGINT", ignore);
@@ -366,8 +391,9 @@ const USAGE = `usage: omp-safe [options] [-- omp arguments...]
   --allow-skill-commands    keep /skill:<name> commands on
   --on-untrusted <policy>   ask (default) | refuse | exclude | disable
   --omp <command>           how to run omp (default "omp")
+  --pass-env <NAME>         pass an environment variable to omp, such as a provider key (repeatable)
   --cwd <dir>               the project to start omp in (default: the current directory)
-  --state-dir <dir>         where each run's overlay and guard entry are written`;
+  --state-dir <dir>         where each run's overlay, guard entry, and empty start directory are written`;
 
 interface ParsedArgs {
 	configPath?: string;
@@ -435,6 +461,9 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
 			case "--omp":
 				parsed.overrides.omp = value().split(/\s+/).filter(Boolean);
 				break;
+			case "--pass-env":
+				parsed.overrides.passEnv = [...(parsed.overrides.passEnv ?? []), value()];
+				break;
 			case "--cwd":
 				parsed.cwd = resolveConfigPath(value(), here);
 				break;
@@ -464,9 +493,10 @@ export async function runOmpSafe(argv: readonly string[], io: LaunchIO): Promise
 		io.err(USAGE);
 		return EXIT_USAGE;
 	}
+	const passEnv = parsed.overrides.passEnv ? { passEnv: [...(file.passEnv ?? []), ...parsed.overrides.passEnv] } : {};
 	return launch({
 		cwd: parsed.cwd ?? process.cwd(),
-		config: { ...file, ...parsed.overrides },
+		config: { ...file, ...parsed.overrides, ...passEnv },
 		ompArgs: parsed.ompArgs,
 		stateDir: parsed.stateDir,
 		io,

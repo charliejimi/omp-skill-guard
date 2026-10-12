@@ -9,6 +9,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { SkillGuardOptions } from "../src/index";
 import { type ApprovedSkill, MANIFEST_SCHEMA, type Manifest, generateKeyPair, signManifest } from "../src/manifest";
+import { safeRemove } from "./fixtures";
 
 export const PACKAGE = path.resolve(import.meta.dir, "..");
 
@@ -62,7 +63,7 @@ async function models(): Promise<ModelRegistry> {
 export function closeRegistry(): void {
 	if (!registry) return;
 	registry.auth.close();
-	fs.rmSync(registry.dir, { recursive: true, force: true });
+	safeRemove(registry.dir);
 	registry = undefined;
 }
 

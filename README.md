@@ -23,7 +23,7 @@ Rewriting the text on its way in is useful, but in omp those rewriting hooks let
 | Part | Where | What it does | If it fails |
 |---|---|---|---|
 | CI tool `omp-skill-guard` | CI | `keygen` makes the key pair. `inventory` lists the skills omp would load, with digests. `check` enforces the rules: `name:` equals the directory name; names use only letters, digits, `.`, `_`, `:`, `-`; `SKILL.md` uses LF line endings; a description is present; no symlinks or special files. `manifest` refuses a skill that has no owner, source, or commit in the approvals file, or whose scripts differ from the declared list. `sign` and `verify` handle the signature. | Exits non-zero; the manifest is not written. |
-| Launcher `omp-safe` | the developer's machine, before omp starts | Verifies the manifest, inventories with omp's own discovery (including skills bundled with `-e` extensions), hashes each skill directory, catches a same-named skill from a higher-priority location shadowing the approved copy, runs the self-test, and asks: do not start (the default), start with only the approved skills, or start with skills off. Without a terminal it refuses unless `--on-untrusted` says otherwise. It writes a settings overlay and a per-run guard entry, starts omp, and afterwards prints the guard's decisions and alerts on any guard handler that failed or timed out. | Refuses to start (exit 3). |
+| Launcher `omp-safe` | the developer's machine, before omp starts | Verifies the manifest, inventories with omp's own discovery (including skills bundled with `-e` extensions), hashes each skill directory, catches a same-named skill from a higher-priority location shadowing the approved copy, runs the self-test, and asks: do not start (the default), start with only the approved skills, or start with skills off. Without a terminal it refuses unless `--on-untrusted` says otherwise. It writes a settings overlay and a per-run guard entry, starts omp from an empty directory with `--cwd` and only an allowlisted environment, and afterwards prints the guard's decisions and alerts on any guard handler that failed or timed out. | Refuses to start (exit 3). |
 | Description guard | `before_agent_start` | In the `<skills>` block of the system prompt, the description of a skill that is not approved, or changed since approval, is withheld, and an approved description that reads like an instruction is removed. Entries are matched exactly as omp renders them, so a description that imitates another skill's entry is withheld whole. | omp sends the original prompt, so the handler never throws. omp-safe's overlay already keeps unapproved skills out of the prompt. |
 | Access policy | `tool_call` | `read`, `grep`, `ast_grep`, and `bash` may touch a skill only while the manifest approves it and its directory hashes to the approved digest, checked again on every call. It recognizes `skill://` URLs, real paths (relative, absolute, `~`, through symlinks, with read selectors), `;`-separated path lists, and `bash` commands and their `cwd`. `bash` may touch a skill script only if the manifest lists it. A skill directory omp did not load is checked by its digest too. A `bash` command that reaches skill files through a glob, a variable, or a whole skills directory is blocked as unverifiable. | omp blocks the call, and so does the guard. |
 | Body guard | `tool_result` | Skill content returned by those tools has its instruction-like lines replaced by a marker; other lines are kept. In a workspace-wide `grep`, `ast_grep`, or shell search, output from an approved skill is scrubbed and output from an unapproved or changed skill is removed, while results from ordinary files are left alone. | omp passes the original result on, so the handler never throws; a skill result it cannot check is withheld. |
@@ -35,7 +35,7 @@ The instruction patterns are an override ("ignore previous", "disregard prior", 
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.3.14 or newer.
+- [Bun](https://bun.sh) 1.3.14 or newer, and a POSIX shell for the two bin wrappers.
 - omp 18.2.8. The package was written and tested against that version; later versions change skill discovery (see [Limits](#limits)).
 - `omp-safe` and `omp-skill-guard` import omp's own discovery code, so install this package next to omp: clone it and run `bun install`. Loading omp's code adds a few seconds before omp starts.
 
@@ -92,7 +92,8 @@ Put the public key and the downloaded manifest where you like, and write `~/.con
 	"tools": ["read", "write", "edit", "grep", "find"],
 	"allowSkillCommands": false,
 	"onUntrusted": "ask",
-	"omp": ["omp"]
+	"omp": ["omp"],
+	"passEnv": []
 }
 ```
 
@@ -103,6 +104,8 @@ omp-safe -- --model <your model>
 ```
 
 The guard reads its trust anchor only from this file or from explicit options, never from environment variables: Bun loads a project's `.env` into the process before omp's code runs, so a repository could otherwise point the guard at its own key.
+
+omp-safe starts omp from an empty directory and names the project with `--cwd`. When omp is installed from npm, Bun runs the `bunfig.toml` preload and loads the `.env` of the directory it starts in before omp's own code, so a repository's preload would otherwise run ahead of every guard. omp gets an empty environment plus `PATH`, `HOME`, locale, terminal, temp, XDG, and `PI_CODING_AGENT_DIR`; pass anything else omp needs, such as your provider's key variable, with `passEnv` or `--pass-env`. Code omp loads can read every variable omp has. The two commands themselves start Bun the same way: `bin/omp-safe` and `bin/omp-skill-guard` are small shell wrappers that start it in an empty directory, so run those, not the `.ts` files.
 
 `omp-safe --help` lists the flags. Every config field has a flag that overrides it, and `--on-untrusted refuse|exclude|disable` decides what happens without a terminal. Exit codes: omp's own, 2 for a usage error, 3 when it refuses to start.
 
@@ -115,19 +118,19 @@ Loading the guard directly (`omp -e <this package>`, with the config file above)
 ## Tests
 
 ```bash
-bun test
+bun run test
 ```
 
-The suite runs through omp's own loader, runner, settings, and skill discovery, with no network: each guard's allow and block paths for every way a skill can be named, the manifest and its signature, the launcher's decisions and overlay (loaded back through omp's settings), and the CI tool. It uses its own HOME, so it never reads your skills.
+The suite runs through omp's own loader, runner, settings, and skill discovery, with no network: each guard's allow and block paths for every way a skill can be named, the manifest and its signature, the launcher's decisions and overlay (loaded back through omp's settings), and the CI tool. `bun run test` starts Bun with a temporary `HOME` and `TMPDIR`; plain `bun test` refuses to run, because the suite creates projects and logs under the home directory and Bun fixes the home directory when it starts.
 
 The live tests run real omp with a scripted test-only model provider (`test/scripted-provider.ts`) and record what the model would receive:
 
 ```bash
 SKILL_GUARD_LIVE=1 OMP_CLI=/path/to/oh-my-pi/packages/coding-agent/src/cli.ts \
-SKILL_GUARD_LIVE_OUT=/tmp/skill-guard-evidence bun test test/live.test.ts
+SKILL_GUARD_LIVE_OUT=/tmp/skill-guard-evidence bun run test test/live.test.ts
 ```
 
-`OMP_BIN=/path/to/omp` runs an installed omp instead. The six scenarios cover descriptions (no guard, omp-safe, guard only), reads (approved, unapproved, changed after startup), `grep` and `bash` (scoped, workspace-wide, blocked), `/skill:` (guard, no guard, omp-safe), scripts (approved, changed after startup), and omp-safe refusing to start plus its audit lines and report.
+`OMP_BIN=/path/to/omp` runs an installed omp instead; an existing evidence folder is never overwritten. The eight scenarios cover descriptions (no guard, omp-safe, guard only), reads (approved, unapproved, changed after startup), `grep` and `bash` (scoped, workspace-wide, blocked), `/skill:` (guard, no guard, omp-safe), scripts (approved, changed after startup), omp-safe refusing to start plus its audit lines and report, a repository's `bunfig.toml` preload and `.env` (they reach plain omp, not omp started by omp-safe, which also drops unlisted variables), and the CI tool with and without its wrapper.
 
 ## To do before a public release
 
