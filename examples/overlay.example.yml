@@ -1,0 +1,8 @@
+# What omp-safe writes for a run where only deploy-helper is approved and unchanged, and passes to
+# omp with --config. You do not write this file; it shows what the launcher sets.
+skills:
+  enabled: true
+  enableSkillCommands: false
+  customDirectories: []
+  includeSkills: ["deploy-helper"]
+  ignoredSkills: ["old-deploy-helper"]

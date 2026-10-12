@@ -1,0 +1,11 @@
+{
+	"skills": {
+		"deploy-helper": {
+			"source": "https://github.com/example/skills",
+			"commit": "0123456789abcdef0123456789abcdef01234567",
+			"owner": "release-team",
+			"scripts": ["scripts/release.sh"]
+		}
+	},
+	"revoked": ["old-deploy-helper"]
+}

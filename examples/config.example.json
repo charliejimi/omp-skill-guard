@@ -1,0 +1,9 @@
+{
+	"manifest": "~/.cache/omp-skill-guard/skills.manifest.json",
+	"publicKeys": ["~/.config/omp-skill-guard/skill-guard.pub.pem"],
+	"auditLog": "~/.local/state/omp-skill-guard/audit.jsonl",
+	"tools": ["read", "write", "edit", "grep", "find"],
+	"allowSkillCommands": false,
+	"onUntrusted": "ask",
+	"omp": ["omp"]
+}
