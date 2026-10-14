@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-10-14
+
+### Fixed
+
+- The access policy and the body guard split a `read`, `grep`, or `ast_grep` path list at `;`, `,`, and whitespace, honoring `{…}` groups, the way omp fans it out into separate reads. `read README.md;.omp/skills/x/SKILL.md` no longer reaches an unapproved or changed skill unchecked. Before, a `read` path was never split, and `grep` and `ast_grep` paths were split only at `;`.
+
 ## [0.1.1] - 2026-10-12
 
 ### Changed

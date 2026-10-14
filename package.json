@@ -1,6 +1,6 @@
 {
 	"name": "omp-skill-guard",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"private": true,
 	"description": "An oh-my-pi (omp) package that lets the agent use only the skills a CI-signed manifest approved, and only while they are unchanged: a CI tool that builds and signs the manifest, a pre-start launcher (omp-safe) that checks every loaded skill before omp opens, and an extension with four guards for skill descriptions, a fail-closed access policy on read, grep, ast_grep, and bash, the skill content those tools return, and /skill: messages.",
 	"type": "module",

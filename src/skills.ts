@@ -178,12 +178,43 @@ function isSkillsRoot(raw: string, context: PathContext): boolean {
 	return [abs, realpathLoose(abs)].some(candidate => skillDirFromRoots(candidate, context.customRoots) === "root");
 }
 
-/** Skills named by the `path` input of `read`, `grep`, or `ast_grep`; the latter two take `;`-separated lists. */
-export function pathInputTargets(toolName: string, input: unknown, context: PathContext): SkillRef[] {
+/**
+ * The parts of a path list split at top-level `;`, `,`, and whitespace, honoring `{…}` groups and
+ * backslash escapes, the way omp's `read`, `grep`, and `ast_grep` fan a list out into separate
+ * targets. omp splits only when the whole string names no existing path; splitting here
+ * unconditionally can only add skill targets to check, never drop one omp would read.
+ */
+function splitPathList(value: string): string[] {
+	const parts: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i]!;
+		if (ch === "\\" && i + 1 < value.length) {
+			i++;
+			continue;
+		}
+		if (ch === "{") depth++;
+		else if (ch === "}") depth = Math.max(0, depth - 1);
+		else if (depth === 0 && (ch === ";" || ch === "," || /\s/.test(ch))) {
+			parts.push(value.slice(start, i));
+			start = i + 1;
+		}
+	}
+	parts.push(value.slice(start));
+	return parts.map(part => part.trim()).filter(Boolean);
+}
+
+/** Skills named by the `path` input of `read`, `grep`, or `ast_grep`, which omp all fan out as path lists. */
+export function pathInputTargets(_toolName: string, input: unknown, context: PathContext): SkillRef[] {
 	const value = input !== null && typeof input === "object" ? (input as { path?: unknown }).path : undefined;
 	if (typeof value !== "string") return [];
-	const entries = toolName === "read" ? [value] : value.split(";");
-	return entries.map(entry => classifyPath(entry, context)).filter((ref): ref is SkillRef => ref !== undefined);
+	const refs = new Map<string, SkillRef>();
+	for (const entry of [value, ...splitPathList(value)]) {
+		const ref = classifyPath(entry, context);
+		if (ref) refs.set(ref.kind === "skill" ? `skill:${ref.name}:${ref.dir}:${ref.rel}` : ref.kind, ref);
+	}
+	return [...refs.values()];
 }
 
 function tokensOf(command: string): string[] {
